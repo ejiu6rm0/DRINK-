@@ -16,6 +16,7 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; background-color: #F2EDE4; }
+        .calendar-grid div { min-height: 50px; }
     </style>
 </head>
 <body>
@@ -37,21 +38,18 @@
             appId: "YOUR_APP_ID"
         };
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        // 將 Firebase 實例掛載到 window，讓 React 腳本可以使用
-        window.fb = { auth, db, doc, setDoc, onSnapshot };
+        try {
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            window.fb = { auth, db, doc, setDoc, onSnapshot };
+        } catch (e) {
+            console.error("Firebase 初始化失敗，請檢查配置", e);
+        }
     </script>
 
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
-        const { 
-            ChevronLeft, ChevronRight, Plus, Trash2, CupSoda, 
-            X, Calculator, ReceiptText, Calendar: CalendarIcon, 
-            List, Cloud, RefreshCw 
-        } = lucide;
 
         const App = () => {
             const [view, setView] = useState('calendar');
@@ -62,12 +60,20 @@
             const [user, setUser] = useState(null);
             const [isSynced, setIsSynced] = useState(false);
 
+            const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫', '固定'];
+            const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分糖', '無糖', '固定'];
+            const emptyRecord = { shop: '', item: '', price: '', ice: '微冰', sugar: '無糖' };
+
             useEffect(() => {
-                if (!window.fb) return;
-                const { auth, onAuthStateChanged, signInAnonymously } = window.fb;
-                signInAnonymously(auth).catch(console.error);
-                const unsubscribe = onAuthStateChanged(auth, setUser);
-                return () => unsubscribe();
+                const checkFB = setInterval(() => {
+                    if (window.fb) {
+                        clearInterval(checkFB);
+                        const { auth, onAuthStateChanged, signInAnonymously } = window.fb;
+                        signInAnonymously(auth).catch(console.error);
+                        onAuthStateChanged(auth, setUser);
+                    }
+                }, 500);
+                return () => clearInterval(checkFB);
             }, []);
 
             useEffect(() => {
@@ -79,7 +85,10 @@
                         setRecords(docSnap.data().data || {});
                     }
                     setIsSynced(true);
-                }, () => setIsSynced(false));
+                }, (err) => {
+                    console.error("讀取失敗:", err);
+                    setIsSynced(false);
+                });
                 return () => unsubscribe();
             }, [user]);
 
@@ -94,7 +103,6 @@
                 } catch (e) { console.error(e); }
             };
 
-            // 以下邏輯與先前版本相同...
             const formatDate = (date) => {
                 const y = date.getFullYear();
                 const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -105,75 +113,156 @@
             const monthStats = useMemo(() => {
                 let totalCups = 0; let totalAmount = 0;
                 const prefix = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`;
+                const monthlyItems = [];
                 Object.keys(records).forEach(date => {
                     if (date.startsWith(prefix)) {
                         records[date].forEach(cup => {
                             totalCups++;
                             totalAmount += parseFloat(cup.price) || 0;
+                            monthlyItems.push({ ...cup, date });
                         });
                     }
                 });
-                return { totalCups, totalAmount };
+                return { totalCups, totalAmount, monthlyItems };
             }, [records, currentMonth]);
 
-            const renderCalendar = () => {
-                const year = currentMonth.getFullYear();
-                const month = currentMonth.getMonth();
-                const firstDay = new Date(year, month, 1).getDay();
-                const daysInMonth = new Date(year, month + 1, 0).getDate();
-                const days = [];
-                for (let i = 0; i < firstDay; i++) days.push(<div key={`e-${i}`} />);
-                for (let d = 1; d <= daysInMonth; d++) {
-                    const date = new Date(year, month, d);
-                    const dStr = formatDate(date);
-                    const has = records[dStr]?.length > 0;
-                    days.push(
-                        <div key={d} onClick={() => { setSelectedDate(dStr); setIsModalOpen(true); }}
-                             className={`aspect-square border border-gray-100 p-1 flex flex-col items-center rounded-xl m-0.5 bg-white cursor-pointer hover:bg-rose-50/50 ${has ? 'ring-1 ring-rose-200 bg-rose-50' : ''}`}>
-                            <span className="text-[10px] font-bold text-gray-400">{d}</span>
-                            {has && <div className="mt-auto mb-1 text-teal-400"><i data-lucide="cup-soda" style={{width: 14, height: 14}}></i></div>}
-                        </div>
-                    );
+            const updateRecord = (index, field, value) => {
+                const current = [...(records[selectedDate] || [])];
+                if (!current[index]) current[index] = { ...emptyRecord };
+                current[index][field] = value;
+                const updated = { ...records, [selectedDate]: current };
+                setRecords(updated);
+                saveToCloud(updated);
+            };
+
+            const addCup = () => {
+                const current = [...(records[selectedDate] || [])];
+                if (current.length < 2) {
+                    current.push({ ...emptyRecord });
+                    const updated = { ...records, [selectedDate]: current };
+                    setRecords(updated);
+                    saveToCloud(updated);
                 }
-                return days;
+            };
+
+            const removeCup = (index) => {
+                const current = [...(records[selectedDate] || [])];
+                current.splice(index, 1);
+                const updated = { ...records, [selectedDate]: current };
+                setRecords(updated);
+                saveToCloud(updated);
             };
 
             useEffect(() => { if (window.lucide) window.lucide.createIcons(); });
 
             return (
-                <div className="min-h-screen p-4 pb-24">
+                <div className="min-h-screen p-4 pb-24 text-[#5D5D5D]">
                     <div className="max-w-md mx-auto space-y-4">
-                        <div className="grid grid-cols-2 gap-3 text-[#5D5D5D]">
+                        {/* 統計面板 */}
+                        <div className="grid grid-cols-2 gap-3">
                             <div className="bg-white p-4 rounded-2xl shadow-sm border-b-4 border-teal-200">
-                                <p className="text-[10px] font-bold text-gray-400">總杯數</p>
-                                <p className="text-2xl font-black">{monthStats.totalCups} <span className="text-xs">杯</span></p>
+                                <p className="text-[10px] font-bold text-gray-400">本月杯數</p>
+                                <p className="text-2xl font-black">{monthStats.totalCups} 杯</p>
                             </div>
                             <div className="bg-white p-4 rounded-2xl shadow-sm border-b-4 border-rose-200">
-                                <p className="text-[10px] font-bold text-gray-400">總花費</p>
+                                <p className="text-[10px] font-bold text-gray-400">本月花費</p>
                                 <p className="text-2xl font-black">${monthStats.totalAmount}</p>
                             </div>
                         </div>
 
+                        {/* 主月曆卡片 */}
                         <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden border border-white">
-                            <div className="p-6 flex flex-col items-center bg-white">
-                                <h1 className="text-xl font-black text-[#5D5D5D]">喝一口咕嚕咕嚕🧋</h1>
-                                <div className="flex items-center gap-1 mt-1">
+                            <div className="p-6 flex flex-col items-center">
+                                <h1 className="text-xl font-black">喝一口咕嚕咕嚕🧋</h1>
+                                <div className="text-[10px] mt-1 flex items-center gap-1">
                                     {isSynced ? 
-                                        <span className="text-[10px] text-teal-400 flex items-center gap-1"><i data-lucide="cloud" style={{width:12}}></i> 雲端同步中</span> : 
-                                        <span className="text-[10px] text-rose-300 flex items-center gap-1"><i data-lucide="refresh-cw" className="animate-spin" style={{width:12}}></i> 儲存中</span>
+                                        <span className="text-teal-400 flex items-center gap-1">● 雲端已同步</span> : 
+                                        <span className="text-rose-300 flex items-center gap-1">○ 連線中...</span>
                                     }
                                 </div>
                             </div>
+                            
                             <div className="px-4 pb-6">
-                                <div className="grid grid-cols-7 text-center text-[10px] font-black text-gray-300 mb-3 tracking-tighter">
+                                <div className="flex justify-between items-center mb-4 px-2 text-sm font-bold">
+                                    <button onClick={() => setCurrentMonth(new Date(currentMonth.setMonth(currentMonth.getMonth()-1)))}>〈</button>
+                                    <span>{currentMonth.getFullYear()} / {currentMonth.getMonth() + 1}月</span>
+                                    <button onClick={() => setCurrentMonth(new Date(currentMonth.setMonth(currentMonth.getMonth()+1)))}>〉</button>
+                                </div>
+                                <div className="grid grid-cols-7 text-center text-[10px] font-black text-gray-300 mb-2">
                                     {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(d => <div key={d}>{d}</div>)}
                                 </div>
-                                <div className="grid grid-cols-7">{renderCalendar()}</div>
+                                <div className="grid grid-cols-7 calendar-grid">
+                                    {(() => {
+                                        const year = currentMonth.getFullYear();
+                                        const month = currentMonth.getMonth();
+                                        const firstDay = new Date(year, month, 1).getDay();
+                                        const daysInMonth = new Date(year, month + 1, 0).getDate();
+                                        const days = [];
+                                        for (let i = 0; i < firstDay; i++) days.push(<div key={`e-${i}`} />);
+                                        for (let d = 1; d <= daysInMonth; d++) {
+                                            const dStr = formatDate(new Date(year, month, d));
+                                            const has = records[dStr]?.length > 0;
+                                            days.push(
+                                                <div key={d} onClick={() => { setSelectedDate(dStr); setIsModalOpen(true); }}
+                                                     className={`aspect-square border border-gray-50 p-1 flex flex-col items-center rounded-xl m-0.5 cursor-pointer hover:bg-rose-50/50 ${has ? 'bg-rose-50 ring-1 ring-rose-100' : 'bg-white'}`}>
+                                                    <span className="text-[10px] font-bold text-gray-400">{d}</span>
+                                                    {has && <div className="mt-auto mb-1 text-teal-400">●</div>}
+                                                </div>
+                                            );
+                                        }
+                                        return days;
+                                    })()}
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    {/* 下方導覽與彈窗省略以節省空間，但逻辑完整 */}
+                    {/* 編輯彈窗 */}
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-[2rem] w-full max-w-sm p-6 shadow-2xl overflow-y-auto max-h-[80vh]">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="font-black text-lg">{selectedDate} 紀錄</h2>
+                                    <button onClick={() => setIsModalOpen(false)} className="p-2">✕</button>
+                                </div>
+                                
+                                <div className="space-y-4">
+                                    {(records[selectedDate] || []).map((cup, idx) => (
+                                        <div key={idx} className="p-4 bg-gray-50 rounded-2xl relative border border-gray-100">
+                                            <button onClick={() => removeCup(idx)} className="absolute top-2 right-2 text-rose-300">✕</button>
+                                            <div className="grid grid-cols-2 gap-2 mb-3">
+                                                <input type="text" placeholder="店家" className="p-2 rounded-lg border text-sm" value={cup.shop} onChange={e => updateRecord(idx, 'shop', e.target.value)} />
+                                                <input type="text" placeholder="品項" className="p-2 rounded-lg border text-sm" value={cup.item} onChange={e => updateRecord(idx, 'item', e.target.value)} />
+                                                <input type="number" placeholder="金額" className="p-2 rounded-lg border text-sm col-span-2" value={cup.price} onChange={e => updateRecord(idx, 'price', e.target.value)} />
+                                            </div>
+                                            <div className="flex flex-wrap gap-1 mb-2">
+                                                {iceOptions.map(opt => (
+                                                    <button key={opt} onClick={() => updateRecord(idx, 'ice', opt)} className={`px-2 py-1 text-[10px] rounded ${cup.ice === opt ? 'bg-teal-400 text-white' : 'bg-white border text-gray-400'}`}>{opt}</button>
+                                                ))}
+                                            </div>
+                                            <div className="flex flex-wrap gap-1">
+                                                {sugarOptions.map(opt => (
+                                                    <button key={opt} onClick={() => updateRecord(idx, 'sugar', opt)} className={`px-2 py-1 text-[10px] rounded ${cup.sugar === opt ? 'bg-rose-300 text-white' : 'bg-white border text-gray-400'}`}>{opt}</button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    
+                                    {(records[selectedDate] || []).length < 2 && (
+                                        <button onClick={addCup} className="w-full py-4 border-2 border-dashed border-gray-200 rounded-2xl text-gray-400 font-bold text-xs">+ 新增紀錄</button>
+                                    )}
+                                </div>
+
+                                <button onClick={() => setIsModalOpen(false)} className="w-full mt-6 bg-[#5D5D5D] text-white py-4 rounded-2xl font-black shadow-lg">完成並儲存</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 下方導覽列 */}
+                    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex bg-white/90 backdrop-blur px-2 py-2 rounded-2xl shadow-xl border border-white z-40 w-64">
+                        <button onClick={() => setView('calendar')} className={`flex-1 py-2 rounded-xl text-xs font-bold ${view === 'calendar' ? 'bg-teal-400 text-white shadow-md' : 'text-gray-400'}`}>日曆</button>
+                        <button onClick={() => setView('list')} className={`flex-1 py-2 rounded-xl text-xs font-bold ${view === 'list' ? 'bg-teal-400 text-white shadow-md' : 'text-gray-400'}`}>清單</button>
+                    </div>
                 </div>
             );
         };
